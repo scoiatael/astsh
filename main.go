@@ -1,16 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"os"
 
 	"github.com/chzyer/readline"
-	"github.com/gdamore/tcell"
-	"github.com/gdamore/tcell/encoding"
 )
 
 type State struct {
+	ShouldBreak bool
 }
 
 type RunnerContext interface {
@@ -35,6 +32,15 @@ func (ctx *Context) State() *State {
 	return &ctx.CurrentState
 }
 
+func (ctx *Context) Loop() error {
+	for !ctx.CurrentState.ShouldBreak {
+		if err := ctx.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (ctx *Context) Run() error {
 	if ctx.nextRunner == nil {
 		shell, err := ctx.NewShell()
@@ -55,57 +61,6 @@ func (ctx *Context) NextRunner(runner Runner) error {
 	return nil
 }
 
-type Ranger struct {
-}
-
-func (rng *Ranger) Run(ctx RunnerContext) error {
-	s, e := tcell.NewScreen()
-	if e != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", e)
-		os.Exit(1)
-	}
-
-	encoding.Register()
-
-	if e = s.Init(); e != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", e)
-		os.Exit(1)
-	}
-
-	s.SetStyle(tcell.StyleDefault.
-		Foreground(tcell.ColorBlack).
-		Background(tcell.ColorWhite))
-	s.Clear()
-
-	quit := make(chan struct{})
-	s.Show()
-	go func() {
-		for {
-			ev := s.PollEvent()
-			switch ev := ev.(type) {
-			case *tcell.EventKey:
-				switch ev.Key() {
-				case tcell.KeyEscape, tcell.KeyEnter:
-					close(quit)
-					return
-				case tcell.KeyCtrlL:
-					s.Sync()
-				}
-			case *tcell.EventResize:
-				s.Sync()
-			}
-		}
-	}()
-	<-quit
-
-	s.Fini()
-	return nil
-}
-
-func (ctx *Context) NewRanger() (*Ranger, error) {
-	return &Ranger{}, nil
-}
-
 type Shell struct {
 }
 
@@ -122,24 +77,24 @@ func (sh *Shell) Run(ctx RunnerContext) error {
 	}
 	defer rl.Close()
 
-	rl.SetPrompt("username: ")
-	username, err := rl.Readline()
-	if err != nil {
-		return err
-	}
 	rl.ResetHistory()
 	log.SetOutput(rl.Stderr())
 
-	rl.SetPrompt(username + "> ")
+	rl.SetPrompt("> ")
 
 	for {
 		ln := rl.Line()
 		if ln.CanContinue() {
 			continue
-		} else if ln.CanBreak() {
+		}
+		if ln.CanBreak() {
+			ctx.State().ShouldBreak = true
 			break
 		}
-		log.Println(username+":", ln.Line)
+		// TODO: Tokenize, parse, execute
+		if ln.Line == "" {
+			continue
+		}
 		if ln.Line == "rng" {
 			rng, err := ctx.NewRanger()
 			if err != nil {
@@ -148,7 +103,9 @@ func (sh *Shell) Run(ctx RunnerContext) error {
 			if err := ctx.NextRunner(rng); err != nil {
 				return err
 			}
+			break
 		}
+		log.Println("!", ln.Line)
 	}
 	rl.Clean()
 	return nil
@@ -156,9 +113,7 @@ func (sh *Shell) Run(ctx RunnerContext) error {
 
 func main() {
 	ctx := Context{}
-	for {
-		if err := ctx.Run(); err != nil {
-			panic(err)
-		}
+	if err := ctx.Loop(); err != nil {
+		panic(err)
 	}
 }
